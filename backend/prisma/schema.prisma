@@ -1,0 +1,323 @@
+// ──────────────────────────────────────────────────────────────
+// Prisma Schema — Legal Aid & Rights Awareness Portal
+// ──────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────
+
+enum UserRole {
+  CITIZEN
+  EDITOR
+  REVIEWER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum TopicStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ApprovalState {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum ReviewState {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ReviewDecision {
+  APPROVED
+  REJECTED
+  NEEDS_CHANGES
+}
+
+enum ContentLocale {
+  en
+  hi
+  kn
+  ta
+  te
+  ml
+  mr
+  bn
+  gu
+  pa
+  or_IN
+}
+
+enum VerificationStatus {
+  VERIFIED
+  UNVERIFIED
+  STALE
+  INVALID
+}
+
+enum SourceType {
+  GOVERNMENT_WEBSITE
+  OFFICIAL_GAZETTE
+  COURT_JUDGMENT
+  STATUTORY_ACT
+  REGULATION
+  NOTIFICATION
+}
+
+enum VerificationOutcome {
+  VERIFIED
+  BROKEN_LINK
+  CONTENT_CHANGED
+  UNREACHABLE
+}
+
+// ─── User ─────────────────────────────────────────────────────
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  name         String
+  role         UserRole   @default(CITIZEN)
+  status       UserStatus @default(ACTIVE)
+  locale       String     @default("en")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  // Password reset fields
+  resetCode       String?   @map("reset_code")
+  resetCodeExpiry DateTime? @map("reset_code_expiry")
+  resetAttempts   Int       @default(0) @map("reset_attempts")
+
+  // Refresh token hash for logout/rotation
+  refreshTokenHash String? @map("refresh_token_hash")
+
+  // Failed login tracking
+  failedLoginAttempts    Int       @default(0) @map("failed_login_attempts")
+  failedLoginLockedUntil DateTime? @map("failed_login_locked_until")
+
+  preferences          UserPreferences?
+  createdContent       LegalContent[]       @relation("ContentCreator")
+  approvedContent      LegalContent[]       @relation("ContentApprover")
+  reviewedTranslations ContentTranslation[] @relation("TranslationReviewer")
+  verifiedSources      OfficialSource[]     @relation("SourceVerifier")
+  chatSessions         ChatSession[]
+  auditLogs            AuditLog[]           @relation("AuditActor")
+  contentReviews       ContentReview[]      @relation("ContentReviewer")
+
+  @@map("users")
+}
+
+model UserPreferences {
+  id                    String   @id @default(cuid())
+  userId                String   @unique @map("user_id")
+  locale                String   @default("en")
+  accessibilitySettings Json     @default("{}") @map("accessibility_settings")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+// ─── Legal Content ────────────────────────────────────────────
+
+model LegalTopic {
+  id        String      @id @default(cuid())
+  slug      String      @unique
+  category  String
+  status    TopicStatus @default(DRAFT)
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  contents LegalContent[]
+
+  @@index([category])
+  @@index([status])
+  @@map("legal_topics")
+}
+
+model LegalContent {
+  id              String        @id @default(cuid())
+  topicId         String        @map("topic_id")
+  jurisdiction    String        @default("IN")
+  sourceReference String?       @map("source_reference")
+  version         Int           @default(1)
+  approvalState   ApprovalState @default(DRAFT) @map("approval_state")
+  createdById     String        @map("created_by_id")
+  approvedById    String?       @map("approved_by_id")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  topic        LegalTopic           @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  createdBy    User                 @relation("ContentCreator", fields: [createdById], references: [id])
+  approvedBy   User?                @relation("ContentApprover", fields: [approvedById], references: [id])
+  translations ContentTranslation[]
+  reviews      ContentReview[]
+
+  @@index([topicId])
+  @@index([approvalState])
+  @@index([jurisdiction])
+  @@map("legal_contents")
+}
+
+model ContentTranslation {
+  id                String        @id @default(cuid())
+  contentId         String        @map("content_id")
+  locale            ContentLocale
+  title             String
+  summary           String
+  body              String
+  officialSourceUrl String?       @map("official_source_url")
+  reviewState       ReviewState   @default(PENDING) @map("review_state")
+  reviewedById      String?       @map("reviewed_by_id")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  content    LegalContent @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  reviewedBy User?        @relation("TranslationReviewer", fields: [reviewedById], references: [id])
+
+  @@unique([contentId, locale])
+  @@index([locale])
+  @@map("content_translations")
+}
+
+// ─── Official Sources ─────────────────────────────────────────
+
+model OfficialSource {
+  id            String     @id @default(cuid())
+  authority     String
+  url           String
+  sourceType    SourceType @map("source_type")
+  retrievedDate DateTime   @map("retrieved_date")
+  lastVerified  DateTime?  @map("last_verified")
+  verifiedById  String?    @map("verified_by_id")
+
+  verifiedBy    User?                @relation("SourceVerifier", fields: [verifiedById], references: [id])
+  verifications SourceVerification[]
+
+  @@index([authority])
+  @@map("official_sources")
+}
+
+model SourceVerification {
+  id          String              @id @default(cuid())
+  sourceId    String              @map("source_id")
+  lastChecked DateTime            @map("last_checked")
+  outcome     VerificationOutcome
+  reviewer    String?
+  notes       String?
+  createdAt   DateTime            @default(now()) @map("created_at")
+
+  source OfficialSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@index([sourceId])
+  @@map("source_verifications")
+}
+
+// ─── Legal Aid Directory ──────────────────────────────────────
+
+model LegalAidContact {
+  id                 String             @id @default(cuid())
+  authority          String
+  state              String
+  district           String?
+  address            String
+  phone              String
+  email              String?
+  hours              String?
+  sourceUrl          String?            @map("source_url")
+  verificationStatus VerificationStatus @default(UNVERIFIED) @map("verification_status")
+  lastVerified       DateTime?          @map("last_verified")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  @@index([state])
+  @@index([district])
+  @@index([verificationStatus])
+  @@map("legal_aid_contacts")
+}
+
+// ─── Chat ─────────────────────────────────────────────────────
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  locale    String   @default("en")
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  expiresAt DateTime @map("expires_at")
+
+  user     User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  feedback ChatFeedback[]
+
+  @@index([userId])
+  @@map("chat_sessions")
+}
+
+model ChatFeedback {
+  id           String   @id @default(cuid())
+  sessionId    String   @map("session_id")
+  rating       Int
+  feedbackText String?  @map("feedback_text")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("chat_feedback")
+}
+
+// ─── Audit & Review ───────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String   @map("actor_id")
+  action    String
+  entity    String
+  entityId  String   @map("entity_id")
+  details   Json     @default("{}")
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  actor User @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model ContentReview {
+  id         String         @id @default(cuid())
+  contentId  String         @map("content_id")
+  reviewerId String         @map("reviewer_id")
+  decision   ReviewDecision
+  notes      String?
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  content  LegalContent @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  reviewer User         @relation("ContentReviewer", fields: [reviewerId], references: [id])
+
+  @@index([contentId])
+  @@index([reviewerId])
+  @@map("content_reviews")
+}
