@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ⚖️ NyayaSetu — Legal Aid & Rights Awareness Portal
 
 > A secure, multilingual platform helping Indian citizens understand their rights and access free legal aid.
@@ -123,3 +124,6 @@ This portal provides legal information, not legal advice. Always consult a quali
 ## 📄 License
 
 MIT License — See [LICENSE](LICENSE) for details.
+=======
+# NyayaSetu
+>>>>>>> 25ac3365ada0a7fe4ab9df20f8aeb201f8e5cc90
