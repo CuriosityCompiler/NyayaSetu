@@ -376,20 +376,6 @@ export class ChatService {
       };
     }
 
-    if (locale === 'en') {
-      return {
-        answer: appendEmergencyNotice(FALLBACK_NOTICES.en, 'en', isEmergency),
-        sourceText,
-        citations: withEmergencyCitation(citations, isEmergency),
-        jurisdiction,
-        lastVerified,
-        sourceLanguage: match.sourceTranslation.locale,
-        translationStatus: 'translation_unavailable',
-        isTranslationFallback: true,
-        isEmergency,
-        suggestedActions: [],
-      };
-    }
 
     try {
       let englishAnswer = appendEnglishUrgentHelpline(
