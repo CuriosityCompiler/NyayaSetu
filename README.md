@@ -2,8 +2,6 @@
 # ⚖️ NyayaSetu — Legal Aid & Rights Awareness Portal
 
 > A secure, multilingual platform helping Indian citizens understand their rights and access free legal aid.
-
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg)](https://typescriptlang.org)
 
@@ -104,8 +102,6 @@ Set `DATABASE_URL`, `JWT_SECRET`, and `GEMINI_API_KEY` for the backend in Vercel
 
 This portal implements comprehensive security following OWASP ASVS:
 
-- ✅ Argon2id password hashing
-- ✅ Short-lived JWT access tokens (60 min)
 - ✅ Endpoint-specific rate limiting (shared Redis storage when configured; in-process otherwise)
 - ✅ Strict CORS allowlist
 - ✅ CSP, HSTS, X-Frame-Options headers (Helmet)
@@ -127,9 +123,3 @@ This portal provides legal information, not legal advice. Always consult a quali
 - [India Code](https://indiacode.nic.in) — Central Acts and Rules
 - [Karnataka SLSA](https://karnataka.nalsa.gov.in) — State Legal Services
 
-## 📄 License
-
-MIT License — See [LICENSE](LICENSE) for details.
-=======
-# NyayaSetu
->>>>>>> 25ac3365ada0a7fe4ab9df20f8aeb201f8e5cc90
