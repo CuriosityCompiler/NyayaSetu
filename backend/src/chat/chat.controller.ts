@@ -11,7 +11,7 @@ export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
   @Post('query')
-  @Throttle({ short: { limit: 5, ttl: 60_000 } })
+  @Throttle({ short: { limit: 30, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Submit query to NyayaMitra legal awareness assistant',
   })

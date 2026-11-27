@@ -38,7 +38,17 @@ async function bootstrap() {
   );
 
   // ─── 2. Strict CORS Configuration ───────────────────────────
-  const allowedOrigins = corsOrigins.split(',').map((origin) => origin.trim());
+  const vercelDomains = [
+    configService.get<string>('VERCEL_URL'),
+    configService.get<string>('VERCEL_BRANCH_URL'),
+    configService.get<string>('VERCEL_PROJECT_PRODUCTION_URL'),
+  ].filter((domain): domain is string => Boolean(domain));
+  const allowedOrigins = [
+    ...new Set([
+      ...corsOrigins.split(',').map((origin) => origin.trim()),
+      ...vercelDomains.map((domain) => `https://${domain}`),
+    ]),
+  ];
   app.enableCors({
     origin: (origin, callback) => {
       // Allow requests with no origin (like mobile apps or curl) or in allowed list

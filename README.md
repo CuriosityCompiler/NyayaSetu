@@ -65,11 +65,11 @@ If Gemini is unavailable or translation changes protected legal numbers, URLs, o
 
 When adding an official translation through the protected content API, set `officialSourceUrl` only to the government page that actually publishes that translation. It is labelled `official_translation` only after editorial approval and validation against trusted HTTPS government domains; otherwise an approved translation is labelled `human_reviewed`.
 
-Chat requests are limited to 5 per minute per client IP, using the shared Redis limiter when configured and process-local counters otherwise. Rate limiting does not make a locally hosted website available when its computer is powered off; the website, database, and backend still need an always-on host for 24/7 availability. This repository does not set up public HTTPS because that requires a continuously reachable server and public hostname/domain. The Compose website, API, database, and Redis ports are bound to `127.0.0.1`, so they are not exposed to other computers by this setup. Use a properly configured HTTPS reverse proxy before any public deployment.
+Chat requests are limited to 30 per minute per client IP, using the shared Redis limiter when configured and process-local counters otherwise. Rate limiting does not make a locally hosted website available when its computer is powered off; the website, database, and backend still need an always-on host for 24/7 availability. This repository does not set up public HTTPS because that requires a continuously reachable server and public hostname/domain. The Compose website, API, database, and Redis ports are bound to `127.0.0.1`, so they are not exposed to other computers by this setup. Use a properly configured HTTPS reverse proxy before any public deployment.
 
 The backend loads configuration from `backend/.env` or the project-root `.env`, so the root configuration created above is available when starting from this directory.
 
-Redis is optional for local development. When `REDIS_URL` is configured, the API shares rate-limit counters through Redis across instances; otherwise limits are stored in process memory. Registration and sign-in are limited to 5 requests per minute per client IP, and password reset is limited to 3 requests per minute for reset requests and 5 for confirmations.
+Redis is optional for local development. When `REDIS_URL` is configured, the API shares rate-limit counters through Redis across instances; otherwise limits are stored in process memory. Registration and sign-in are limited to 5 requests per minute per client IP, password reset is limited to 3 requests per minute for reset requests and 5 for confirmations, and chat queries are limited to 30 per minute per client IP.
 
 Public legal-guide and legal-aid GET responses support short-lived HTTP caching (`max-age=60`, with `stale-while-revalidate=300`) so a CDN or reverse proxy can reduce repeated database reads. The backend health probe checks PostgreSQL readiness, and the frontend container waits for a healthy backend before starting.
 
@@ -93,6 +93,12 @@ Visit **http://localhost:3000**
 The portal is publicly accessible. Its home, rights, legal-aid, how-to, sources, search, and assistant views are available as separate pages from the navigation. Sign-in and account-creation pages have been removed; administrative APIs and account-specific profile operations remain protected.
 
 The language selector localizes the shared navigation, homepage, key rights/legal-aid controls, search interface, and chatbot interface, persists the selection, and updates the document language. For chatbot answers, approved reviewer translations are used when available; otherwise the local model drafts from approved database content and translates the result. Machine translations are labelled, and if generation/translation fails the API shows a localized warning plus the approved source-language text. The API never accepts model-generated citations; it attaches only source links that pass the official-domain allowlist.
+
+## Vercel Services deployment
+
+The root `vercel.json` deploys the NestJS API as `backend` and the Next.js app as `frontend`. The API is public under `/api/*`; all other public paths route to the frontend. The browser calls the API on the same origin at `/api/v1`, so no service binding is needed: there is no server-side frontend-to-backend call. PostgreSQL, Redis, and Gemini are external services, not Vercel services.
+
+Set `DATABASE_URL`, `JWT_SECRET`, and `GEMINI_API_KEY` for the backend in Vercel's project environment settings. `REDIS_URL` is optional. Do not set `NEXT_PUBLIC_API_URL` in Vercel; the frontend uses the same-origin API path. The backend adds Vercel's deployment, branch, and production domains to its CORS allowlist automatically; keep `CORS_ORIGINS` for any additional origins. Use `vercel dev` from the repository root to test the services locally.
 
 ## 🔒 Security
 
