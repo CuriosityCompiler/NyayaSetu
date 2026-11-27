@@ -80,21 +80,52 @@ describe('LanguageModelService', () => {
     });
   });
 
-  it('reports free-tier quota exhaustion without trying another provider', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValue({
+  it('falls back to other free-tier Gemini models when one hits 429', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+      } as Response)
+      .mockResolvedValueOnce(geminiResponse('अनुवादित उत्तर'));
+
+    const model = new LanguageModelService(
+      createConfig({
+        GEMINI_API_KEY: 'server-secret-key',
+        GEMINI_RETRY_DELAY_MS: 0,
+      }),
+    );
+
+    await expect(
+      model.translateAnswer('approved answer', 'hi'),
+    ).resolves.toBe('अनुवादित उत्तर');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toContain('gemini-3.6-flash');
+    expect(fetchMock.mock.calls[1][0]).toContain('gemini-3.5-flash-lite');
+  });
+
+  it('reports free-tier quota exhaustion when all free-tier models return 429', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
       ok: false,
       status: 429,
     } as Response);
     const model = new LanguageModelService(
       createConfig({
         GEMINI_API_KEY: 'server-secret-key',
+        GEMINI_RETRY_DELAY_MS: 0,
       }),
     );
 
     await expect(
       model.translateAnswer('approved answer', 'hi'),
     ).rejects.toThrow('free-tier quota or rate limit was reached');
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(
+      fetchMock.mock.calls.every(([url]) =>
+        String(url).startsWith('https://generativelanguage.googleapis.com/'),
+      ),
+    ).toBe(true);
   });
 
   it('reports provider errors and bounds request time', async () => {
@@ -106,6 +137,7 @@ describe('LanguageModelService', () => {
       createConfig({
         GEMINI_API_KEY: 'server-secret-key',
         GEMINI_API_TIMEOUT_MS: 12_000,
+        GEMINI_RETRY_DELAY_MS: 0,
       }),
     );
 
@@ -113,6 +145,26 @@ describe('LanguageModelService', () => {
       model.translateAnswer('approved answer', 'hi'),
     ).rejects.toThrow('returned HTTP 503');
     expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('caches identical prompts to conserve free-tier quota', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(geminiResponse('Cached answer'));
+    const model = new LanguageModelService(
+      createConfig({
+        GEMINI_API_KEY: 'server-secret-key',
+        GEMINI_RETRY_DELAY_MS: 0,
+      }),
+    );
+
+    await expect(model.translateAnswer('hello', 'hi')).resolves.toBe(
+      'Cached answer',
+    );
+    await expect(model.translateAnswer('hello', 'hi')).resolves.toBe(
+      'Cached answer',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects malformed model responses', async () => {
@@ -124,7 +176,10 @@ describe('LanguageModelService', () => {
       }),
     } as Response);
     const model = new LanguageModelService(
-      createConfig({ GEMINI_API_KEY: 'server-secret-key' }),
+      createConfig({
+        GEMINI_API_KEY: 'server-secret-key',
+        GEMINI_RETRY_DELAY_MS: 0,
+      }),
     );
 
     await expect(

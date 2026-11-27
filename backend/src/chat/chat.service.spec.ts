@@ -23,9 +23,9 @@ function translation(
     summary: 'The RTI process has a 30 day response period and a ₹10 fee.',
     body: 'Section 7 provides a 30 day response period. Keep % and & symbols unchanged.',
     reviewState: ReviewState.APPROVED,
-    reviewedById: 'reviewer-1',
+    reviewedById: 'reviewer-1' as string | null,
     officialSourceUrl,
-    reviewedBy: { role: 'REVIEWER' },
+    reviewedBy: { role: 'REVIEWER' } as { role: string } | null,
   };
 }
 
@@ -313,5 +313,43 @@ describe('ChatService', () => {
 
     expect(result.translationStatus).toBe('translation_unavailable');
     expect(result.sourceText).toContain('Right to Information');
+  });
+
+  it('returns approved English text directly when English grounding fails', async () => {
+    const unreviewedEn = {
+      ...translation(ContentLocale.en),
+      reviewedById: null,
+      reviewedBy: null,
+    };
+    const { service } = makeService({
+      translations: [unreviewedEn],
+      model: {
+        generateGroundedAnswer: jest
+          .fn()
+          .mockRejectedValue(new Error('quota exhausted')),
+      },
+    });
+
+    const result = await service.handleQuery({
+      message: 'Tell me about RTI',
+      locale: 'en',
+    } as ChatQueryDto);
+
+    expect(result.answer).toContain('Right to Information');
+    expect(result.answer).toContain('15100');
+    expect(result.isTranslationFallback).toBe(false);
+  });
+
+  it('returns helpful guidance and suggested topics for unmatched queries', async () => {
+    const { service } = makeService();
+
+    const result = await service.handleQuery({
+      message: 'xylophone quantum',
+      locale: 'en',
+    } as ChatQueryDto);
+
+    expect(result.answer).toContain('15100');
+    expect(result.answer).not.toContain('approved source-language information is shown below');
+    expect(result.suggestedActions).toContain('Right to Information');
   });
 });

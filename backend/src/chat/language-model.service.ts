@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 export type SupportedChatLocale = 'en' | 'hi' | 'kn' | 'ta' | 'te' | 'mr';
@@ -10,9 +10,20 @@ export interface GroundingSource {
   reference: string;
 }
 
-const GEMINI_MODEL = 'gemini-3.6-flash';
-const GEMINI_ENDPOINT =
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+/**
+ * Active Gemini models that support the Free Tier (no billing required).
+ * Tried in order; if one hits a free-tier rate limit (429) or transient error,
+ * the service falls back to the next free-tier model.
+ */
+const FREE_TIER_MODELS = [
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+] as const;
+
+const DEFAULT_RETRY_DELAY_MS = 1_000;
+const CACHE_TTL_MS = 10 * 60 * 1_000;
+const MAX_CACHE_ENTRIES = 200;
 
 const LOCALE_NAMES: Record<SupportedChatLocale, string> = {
   en: 'English',
@@ -23,14 +34,36 @@ const LOCALE_NAMES: Record<SupportedChatLocale, string> = {
   mr: 'Marathi',
 };
 
+function geminiEndpoint(model: string): string {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+}
+
 @Injectable()
 export class LanguageModelService {
+  private readonly logger = new Logger(LanguageModelService.name);
   private readonly apiKey: string;
   private readonly timeoutMs: number;
+  private readonly retryDelayMs: number;
+  private readonly models: readonly string[];
+  private readonly cache = new Map<string, { value: string; expiresAt: number }>();
 
   constructor(config: ConfigService) {
     this.apiKey = config.get<string>('GEMINI_API_KEY')?.trim() ?? '';
     this.timeoutMs = config.get<number>('GEMINI_API_TIMEOUT_MS') || 45_000;
+    const configuredRetryDelay = config.get<number>('GEMINI_RETRY_DELAY_MS');
+    this.retryDelayMs =
+      typeof configuredRetryDelay === 'number' && configuredRetryDelay >= 0
+        ? configuredRetryDelay
+        : DEFAULT_RETRY_DELAY_MS;
+
+    // Allow overriding the model list via env var (comma-separated).
+    const envModels = config.get<string>('GEMINI_MODELS')?.trim();
+    this.models = envModels
+      ? envModels
+          .split(',')
+          .map((m) => m.trim())
+          .filter(Boolean)
+      : FREE_TIER_MODELS;
   }
 
   async translateQuestionToEnglish(
@@ -87,14 +120,81 @@ export class LanguageModelService {
     );
   }
 
+  /**
+   * Try each free-tier Gemini model in `this.models`, caching successful results
+   * to conserve free-tier RPM/RPD quota. Falls back immediately to the next
+   * free-tier model on 429 (each model has its own quota) and retries once on
+   * transient 5xx/network errors.
+   */
   private async generateJson(prompt: string): Promise<string> {
     if (!this.apiKey) {
       throw new Error('GEMINI_API_KEY is not configured.');
     }
 
+    const cached = this.getCached(prompt);
+    if (cached) {
+      return cached;
+    }
+
+    let lastError: Error | undefined;
+
+    for (const model of this.models) {
+      const maxAttempts = 2;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        try {
+          const answer = await this.callGemini(model, prompt);
+          this.setCached(prompt, answer);
+          return answer;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          const isRateLimit = error instanceof RateLimitError;
+          const isRetryable = error instanceof RetryableError;
+
+          this.logger.warn(
+            `Gemini ${model} attempt ${attempt + 1}/${maxAttempts} failed: ${lastError.message}`,
+          );
+
+          // On 429, immediately try the next free-tier model instead of waiting.
+          if (isRateLimit || !isRetryable) {
+            break;
+          }
+
+          if (attempt < maxAttempts - 1 && this.retryDelayMs > 0) {
+            await sleep(this.retryDelayMs);
+          }
+        }
+      }
+    }
+
+    throw lastError ?? new Error('All Gemini free-tier models failed.');
+  }
+
+  private getCached(prompt: string): string | undefined {
+    const entry = this.cache.get(prompt);
+    if (!entry) {
+      return undefined;
+    }
+    if (Date.now() > entry.expiresAt) {
+      this.cache.delete(prompt);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  private setCached(prompt: string, value: string): void {
+    if (this.cache.size >= MAX_CACHE_ENTRIES) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.cache.delete(oldestKey);
+      }
+    }
+    this.cache.set(prompt, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+  }
+
+  private async callGemini(model: string, prompt: string): Promise<string> {
     let response: Response;
     try {
-      response = await fetch(GEMINI_ENDPOINT, {
+      response = await fetch(geminiEndpoint(model), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -116,12 +216,19 @@ export class LanguageModelService {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch {
-      throw new Error('The Gemini API could not be reached.');
+      throw new RetryableError('The Gemini API could not be reached.');
     }
 
     if (!response.ok) {
       if (response.status === 429) {
-        throw new Error('The Gemini free-tier quota or rate limit was reached.');
+        throw new RateLimitError(
+          'The Gemini free-tier quota or rate limit was reached.',
+        );
+      }
+      if (response.status >= 500) {
+        throw new RetryableError(
+          `The Gemini API returned HTTP ${response.status}.`,
+        );
       }
       throw new Error(`The Gemini API returned HTTP ${response.status}.`);
     }
@@ -172,6 +279,14 @@ export class LanguageModelService {
   }
 }
 
+class RetryableError extends Error {}
+
+class RateLimitError extends RetryableError {}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

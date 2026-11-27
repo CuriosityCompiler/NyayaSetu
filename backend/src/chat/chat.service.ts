@@ -34,7 +34,7 @@ const HELPLINE_SENTENCES: Record<SupportedChatLocale, string> = {
 };
 
 const EMERGENCY_NOTICES: Record<SupportedChatLocale, string> = {
-  en: 'If you are in immediate danger, call 112 now. Women’s Helpline: 181. Childline: 1098.',
+  en: 'If you are in immediate danger, call 112 now. Women\'s Helpline: 181. Childline: 1098.',
   hi: 'यदि आप तत्काल खतरे में हैं, तो अभी 112 पर कॉल करें। महिला हेल्पलाइन: 181। चाइल्डलाइन: 1098।',
   kn: 'ನೀವು ತಕ್ಷಣದ ಅಪಾಯದಲ್ಲಿದ್ದರೆ, ಈಗಲೇ 112ಕ್ಕೆ ಕರೆಮಾಡಿ. ಮಹಿಳಾ ಸಹಾಯವಾಣಿ: 181. ಮಕ್ಕಳ ಸಹಾಯವಾಣಿ: 1098.',
   ta: 'உடனடி ஆபத்தில் இருந்தால், இப்போது 112-ஐ அழைக்கவும். பெண்கள் உதவி எண்: 181. குழந்தைகள் உதவி எண்: 1098.',
@@ -241,10 +241,15 @@ export class ChatService {
           ]
             .join(' ')
             .toLocaleLowerCase();
-          const score = searchTerms.reduce(
-            (total, term) => total + (searchableText.includes(term) ? 1 : 0),
-            0,
-          );
+          const score = searchTerms.reduce((total, term) => {
+            if (searchableText.includes(term)) {
+              return total + 1;
+            }
+            if (term.length >= 5 && searchableText.includes(term.slice(0, -1))) {
+              return total + 0.5;
+            }
+            return total;
+          }, 0);
           return {
             ...candidate,
             score,
@@ -273,12 +278,16 @@ export class ChatService {
 
     const match = ranked[0];
     if (!match) {
+      const availableTopics = baseMatches
+        .slice(0, 4)
+        .map((candidate) => candidate.answerTranslation.title);
       return this.unmatchedResponse(
         locale,
         localeValue,
         officialSources,
         isEmergency,
         legalAidCitations,
+        availableTopics,
       );
     }
 
@@ -361,6 +370,7 @@ export class ChatService {
       reference: candidate.content.sourceReference || 'Approved legal content',
     }));
 
+    // Unsupported locale — return source text with fallback notice
     if (!locale) {
       return {
         answer: appendEmergencyNotice(FALLBACK_NOTICES.en, 'en', isEmergency),
@@ -376,21 +386,8 @@ export class ChatService {
       };
     }
 
-    if (locale === 'en') {
-      return {
-        answer: appendEmergencyNotice(FALLBACK_NOTICES.en, 'en', isEmergency),
-        sourceText,
-        citations: withEmergencyCitation(citations, isEmergency),
-        jurisdiction,
-        lastVerified,
-        sourceLanguage: match.sourceTranslation.locale,
-        translationStatus: 'translation_unavailable',
-        isTranslationFallback: true,
-        isEmergency,
-        suggestedActions: [],
-      };
-    }
-
+    // For English or any supported locale: generate a grounded answer from the
+    // approved source material using the LLM, then translate if needed.
     try {
       let englishAnswer = appendEnglishUrgentHelpline(
         await this.languageModel.generateGroundedAnswer(
@@ -400,6 +397,21 @@ export class ChatService {
       );
       if (isEmergency) {
         englishAnswer = `${EMERGENCY_NOTICES.en}\n\n${englishAnswer}`;
+      }
+
+      // For English locale, return the grounded answer directly.
+      if (locale === 'en') {
+        return {
+          answer: appendEmergencyNotice(englishAnswer, 'en', isEmergency),
+          citations: withEmergencyCitation(citations, isEmergency),
+          jurisdiction,
+          lastVerified,
+          sourceLanguage: 'en',
+          translationStatus: 'machine_translated',
+          isTranslationFallback: false,
+          isEmergency,
+          suggestedActions: [],
+        };
       }
 
       const translatedAnswer = await this.languageModel.translateAnswer(
@@ -432,6 +444,23 @@ export class ChatService {
       this.logger.warn(
         `Grounded answer generation or translation failed: ${errorMessage(error)}`,
       );
+      if (locale === 'en') {
+        return {
+          answer: appendEmergencyNotice(
+            appendEnglishUrgentHelpline(sourceText),
+            'en',
+            isEmergency,
+          ),
+          citations: withEmergencyCitation(citations, isEmergency),
+          jurisdiction,
+          lastVerified,
+          sourceLanguage: match.sourceTranslation.locale,
+          translationStatus: 'human_reviewed',
+          isTranslationFallback: false,
+          isEmergency,
+          suggestedActions: [],
+        };
+      }
       return {
         answer: appendEmergencyNotice(
           FALLBACK_NOTICES[locale || 'en'],
@@ -543,6 +572,7 @@ export class ChatService {
     }>,
     isEmergency: boolean,
     legalAidCitations: Citation[],
+    availableTopics: string[] = [],
   ): ChatQueryResponse {
     const nalsa = officialSources.find(
       (source) =>
@@ -568,28 +598,74 @@ export class ChatService {
       isEmergency,
     );
 
-    const answer =
-      requestedLocale !== locale
-        ? FALLBACK_NOTICES.en
-        : FALLBACK_NOTICES[locale || 'en'];
+    const effectiveLocale =
+      requestedLocale !== locale ? 'en' : locale || 'en';
+    const topicHint = availableTopics.length
+      ? `\n\nYou can ask about: ${availableTopics.join(', ')}.`
+      : '';
+    const answer = `${UNMATCHED_NOTICES[effectiveLocale]}${
+      effectiveLocale === 'en' ? topicHint : ''
+    }`;
 
     return {
-      answer: appendEmergencyNotice(answer, locale || 'en', isEmergency),
+      answer: appendEmergencyNotice(answer, effectiveLocale, isEmergency),
       citations: responseCitations,
       jurisdiction: 'IN',
       lastVerified: latestVerifiedDate(responseCitations),
       sourceLanguage: 'en',
       translationStatus: 'translation_unavailable',
-      isTranslationFallback: locale !== 'en',
+      isTranslationFallback: effectiveLocale !== 'en',
       isEmergency,
-      suggestedActions: [],
+      suggestedActions: availableTopics,
     };
   }
 }
 
+const UNMATCHED_NOTICES: Record<SupportedChatLocale, string> = {
+  en: `I could not find an exact verified guide matching your question. Try asking with specific keywords (such as RTI, free legal aid, consumer rights, arrest, wages, or domestic violence). ${HELPLINE_SENTENCES.en}`,
+  hi: `आपके प्रश्न से मेल खाने वाली सटीक सत्यापित मार्गदर्शिका नहीं मिली। कृपया स्पष्ट शब्दों (जैसे RTI, निःशुल्क कानूनी सहायता, उपभोक्ता अधिकार, गिरफ्तारी, मजदूरी, या घरेलू हिंसा) के साथ पूछें। ${HELPLINE_SENTENCES.hi}`,
+  kn: `ನಿಮ್ಮ ಪ್ರಶ್ನೆಗೆ ಹೊಂದಿಕೆಯಾಗುವ ನಿಖರವಾದ ಪರಿಶೀಲಿತ ಮಾರ್ಗದರ್ಶಿ ಸಿಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ನಿರ್ದಿಷ್ಟ ಪದಗಳೊಂದಿಗೆ (ಉದಾ. RTI, ಉಚಿತ ಕಾನೂನು ನೆರವು, ಗ್ರಾಹಕ ಹಕ್ಕುಗಳು) ಕೇಳಿ. ${HELPLINE_SENTENCES.kn}`,
+  ta: `உங்கள் கேள்விக்குப் பொருந்தும் சரிபார்க்கப்பட்ட வழிகாட்டி கிடைக்கவில்லை. தயவுசெய்து குறிப்பிட்ட சொற்களுடன் (RTI, இலவச சட்ட உதவி, நுகர்வோர் உரிமைகள்) கேட்கவும். ${HELPLINE_SENTENCES.ta}`,
+  te: `మీ ప్రశ్నకు సరిపోయే ధృవీకరించబడిన గైడ్ కనుగొనబడలేదు. దయచేసి నిర్దిష్ట పదాలతో (RTI, ఉచిత న్యాయ సహాయం, వినియోగదారు హక్కులు) అడగండి. ${HELPLINE_SENTENCES.te}`,
+  mr: `तुमच्या प्रश्नाशी जुळणारे अचूक सत्यापित मार्गदर्शन सापडले नाही. कृपया विशिष्ट शब्दांसह (उदा. RTI, मोफत कायदेशीर मदत, ग्राहक हक्क) विचारा. ${HELPLINE_SENTENCES.mr}`,
+};
+
 function isSupportedLocale(value: string): value is SupportedChatLocale {
   return SUPPORTED_LOCALES.includes(value as SupportedChatLocale);
 }
+
+const STOP_WORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'with',
+  'what',
+  'how',
+  'are',
+  'can',
+  'you',
+  'your',
+  'does',
+  'did',
+  'from',
+  'this',
+  'that',
+  'have',
+  'has',
+  'was',
+  'were',
+  'will',
+  'would',
+  'should',
+  'could',
+  'about',
+  'please',
+  'help',
+  'need',
+  'want',
+  'get',
+  'tell',
+]);
 
 function tokenize(value: string): string[] {
   return [
@@ -597,10 +673,7 @@ function tokenize(value: string): string[] {
       value
         .toLocaleLowerCase()
         .match(/[\p{L}\p{N}]{2,}/gu)
-        ?.filter(
-          (term) =>
-            !['the', 'and', 'for', 'with', 'what', 'how'].includes(term),
-        ) || [],
+        ?.filter((term) => !STOP_WORDS.has(term)) || [],
     ),
   ];
 }
