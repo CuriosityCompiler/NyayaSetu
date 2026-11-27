@@ -186,8 +186,10 @@ export default function AssistantPage() {
               {starterQuestions.map((q, i) => (
                 <button
                   key={i}
+                  type="button"
+                  disabled={!hasAcceptedPrivacy || isLoading}
                   onClick={() => handleSend(q)}
-                  className="w-full text-left text-xs p-2 rounded-lg bg-surface-elevated/60 hover:bg-surface-elevated text-text-primary hover:text-accent border border-border/60 transition-colors"
+                  className="w-full text-left text-xs p-2 rounded-lg bg-surface-elevated/60 hover:bg-surface-elevated text-text-primary hover:text-accent border border-border/60 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {q}
                 </button>

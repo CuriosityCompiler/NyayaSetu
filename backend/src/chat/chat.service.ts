@@ -667,10 +667,29 @@ const STOP_WORDS = new Set([
   'tell',
 ]);
 
+const MULTILINGUAL_SYNONYMS: ReadonlyArray<[RegExp, string]> = [
+  [/आरटीआई|सूचना का अधिकार|ಆರ್‌ಟಿಐ|ಮಾಹಿತಿ ಹಕ್ಕು|ஆர்\.?டி\.?ஐ|தகவல் அறியும் உரிமை|ఆర్టీఐ|సమాచార హక్కు|माहिती अधिकार/i, 'rti information'],
+  [/कानूनी सहायता|विधिक सहायता|वकील|नालसा|ಕಾನೂನು ನೆರವು|ವಕೀಲ|ನಲ್ಸಾ|சட்ட உதவி|வழக்கறிஞர்|நல்சா|న్యాయ సహాయం|న్యాయవాది|నల్సా|कायदेशीर मदत|विधी सहाय्य/i, 'legal aid nalsa lawyer'],
+  [/उपभोक्ता|शिकायत|ಗ್ರಾಹಕ|ದೂರು|நுகர்வோர்|புகார்|వినియోగదారు|ఫిర్యాదు|ग्राहक|तक्रार/i, 'consumer protection complaint'],
+  [/घरेलू हिंसा|महिला|सुरक्षा|ಕೌಟುಂಬಿಕ ಹಿಂಸೆ|ಮಹಿಳೆ|குடும்ப வன்முறை|பெண்|గృహ హింస|మహిళ|कौटुंबिक हिंसाचार|महिला/i, 'domestic violence women protection'],
+  [/गिरफ्तार|पुलिस|एफआईआर|ಜಾಮೀನು|ಬಂಧನ|ಪೊಲೀಸ್|கைது|காவல்|అరెస్టు|పోలీసు|अटक|पोलीस/i, 'arrest detention police'],
+  [/वरिष्ठ नागरिक|माता-पिता|ಹಿರಿಯ ನಾಗರಿಕ|மூத்த குடிமக்கள்|సీనియర్ సిటిజన్|ज्येष्ठ नागरिक/i, 'senior citizen maintenance'],
+  [/साइबर|ऑनलाइन धोखाधड़ी|ಸೈಬರ್|சைபர்|సైబర్|सायबर/i, 'cybercrime reporting'],
+  [/मौलिक अधिकार|संविधान|ಮೂಲಭೂತ ಹಕ್ಕು|அடிப்படை உரிமை|ప్రాథమిక హక్కు|मूलभूत हक्क/i, 'fundamental rights constitution'],
+];
+
+function expandMultilingualQuery(value: string): string {
+  const extras = MULTILINGUAL_SYNONYMS.filter(([pattern]) =>
+    pattern.test(value),
+  ).map(([, keywords]) => keywords);
+  return extras.length ? `${value} ${extras.join(' ')}` : value;
+}
+
 function tokenize(value: string): string[] {
+  const expanded = expandMultilingualQuery(value);
   return [
     ...new Set(
-      value
+      expanded
         .toLocaleLowerCase()
         .match(/[\p{L}\p{N}]{2,}/gu)
         ?.filter((term) => !STOP_WORDS.has(term)) || [],
@@ -713,15 +732,29 @@ function latestVerifiedDate(citations: Citation[]): string | undefined {
     .at(-1);
 }
 
+function normalizeDigits(value: string): string {
+  return value
+    .replace(/[\u0966-\u096F]/g, (ch) => String(ch.charCodeAt(0) - 0x0966))
+    .replace(/[\u0CE6-\u0CEF]/g, (ch) => String(ch.charCodeAt(0) - 0x0CE6))
+    .replace(/[\u0BE6-\u0BEF]/g, (ch) => String(ch.charCodeAt(0) - 0x0BE6))
+    .replace(/[\u0C66-\u0C6F]/g, (ch) => String(ch.charCodeAt(0) - 0x0C66));
+}
+
+function extractProtectedTokens(value: string): string[] {
+  const normalized = normalizeDigits(value);
+  return (
+    normalized.match(/https?:\/\/\S+|[\d][\d,]*(?:\.\d+)?|%/g) || []
+  ).map((token) =>
+    token.startsWith('http') ? token : token.replace(/,/g, ''),
+  );
+}
+
 export function preservesProtectedTokens(
   source: string,
   translation: string,
 ): boolean {
-  const required =
-    source.match(/https?:\/\/\S+|[\d][\d,]*(?:\.\d+)?|[%&]/g) || [];
-  const available = [
-    ...(translation.match(/https?:\/\/\S+|[\d][\d,]*(?:\.\d+)?|[%&]/g) || []),
-  ];
+  const required = extractProtectedTokens(source);
+  const available = [...extractProtectedTokens(translation)];
 
   return required.every((token) => {
     const index = available.indexOf(token);
